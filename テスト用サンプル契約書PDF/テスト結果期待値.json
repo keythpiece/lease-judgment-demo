@@ -1,0 +1,74 @@
+[
+  {
+    "no": 1,
+    "file_name": "定期建物賃貸借契約書_オフィス定期.pdf",
+    "document_type": "定期建物賃貸借契約書",
+    "lease_identification": "リース対象",
+    "lease_classification": "オペレーティングリース",
+    "human_review_required": false,
+    "reason": "特定の貸室を一定期間、事務所として使用する権利を得ているためリース対象。所有権移転、割安購入選択権、ファイナンスリース判定に必要な75%/90%要件に該当する情報がないためオペレーティングリース。"
+  },
+  {
+    "no": 2,
+    "file_name": "建物賃貸借契約書_事務所倉庫.pdf",
+    "document_type": "建物賃貸借契約書",
+    "lease_identification": "リース対象",
+    "lease_classification": "オペレーティングリース",
+    "human_review_required": false,
+    "reason": "特定の建物を事務所および倉庫として使用する契約であり、借主が契約期間中の使用便益を得るためリース対象。所有権移転等の記載がないためオペレーティングリース。"
+  },
+  {
+    "no": 3,
+    "file_name": "土地賃貸借契約書_実証用地.pdf",
+    "document_type": "土地賃貸借契約書",
+    "lease_identification": "リース対象",
+    "lease_classification": "オペレーティングリース",
+    "human_review_required": false,
+    "reason": "特定の土地を実証設備の設置および運用に使用する権利を得ているためリース対象。不動産系の使用権であり、所有権移転や購入選択権がないためオペレーティングリース。"
+  },
+  {
+    "no": 4,
+    "file_name": "賃貸借条件変更覚書_賃料改定免除.pdf",
+    "document_type": "賃貸借条件変更覚書",
+    "lease_identification": "リース対象_変更契約",
+    "lease_classification": "オペレーティングリース_原契約引継ぎ",
+    "human_review_required": true,
+    "reason": "原契約である貸室賃貸借契約の賃料改定および免除条件を定める変更覚書。単独の新規契約ではなく、原契約のリース判定と分類を引き継ぐ。"
+  },
+  {
+    "no": 5,
+    "file_name": "契約期間延長申入書_土地賃貸借.pdf",
+    "document_type": "契約期間延長申入書",
+    "lease_identification": "単体ではリース対象外_関連資料",
+    "lease_classification": "原契約依存",
+    "human_review_required": true,
+    "reason": "土地賃貸借契約の期間延長を申し入れる文書であり、単体では合意済みの契約書ではない。承諾済み覚書等があればリース期間変更として扱う。"
+  },
+  {
+    "no": 6,
+    "file_name": "河川区域内土地占用許可書_関連資料.pdf",
+    "document_type": "許可書_関連資料",
+    "lease_identification": "原則リース対象外_要確認",
+    "lease_classification": "分類なし",
+    "human_review_required": true,
+    "reason": "賃貸借契約ではなく行政許可書風の資料。占用場所、占用期間、占用目的はあるが、契約当事者間の賃貸借契約として作成していないため、通常の契約書判定では対象外。"
+  },
+  {
+    "no": 7,
+    "file_name": "貸室賃貸借契約書_商業ビル表形式.pdf",
+    "document_type": "貸室賃貸借契約書",
+    "lease_identification": "リース対象",
+    "lease_classification": "オペレーティングリース",
+    "human_review_required": false,
+    "reason": "特定の商業ビル区画を一定期間、事務所として使用する契約。契約面積、用途、契約期間、賃料が明示されておりリース対象。所有権移転等がないためオペレーティングリース。"
+  },
+  {
+    "no": 8,
+    "file_name": "斜めスキャン風_建物賃貸借契約書.pdf",
+    "document_type": "建物賃貸借契約書_OCRテスト用",
+    "lease_identification": "リース対象",
+    "lease_classification": "オペレーティングリース",
+    "human_review_required": false,
+    "reason": "OCRテスト用の斜めスキャン風PDFだが、内容は建物賃貸借契約。対象建物、使用目的、契約期間、賃料、敷金が明示されておりリース対象。ファイナンス要件はないためオペレーティングリース。"
+  }
+]
