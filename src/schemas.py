@@ -113,10 +113,15 @@ DEFAULT_RESULT: dict[str, Any] = {
         "human_review_guidance": [],
         "recommended_user_action": "",
     },
+    "knowledge_applied": {
+        "threshold_overrides": {},
+        "notes": [],
+    },
     "audit": {
         "input_pdf_name": "",
         "judged_at": "",
         "engine": "rule_based",
+        "user_confirmations": [],
     },
 }
 

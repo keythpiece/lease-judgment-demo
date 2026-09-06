@@ -7,9 +7,30 @@ from pathlib import Path
 from typing import Any
 
 from .evidence_extractor import any_keyword, find_keyword_evidence
+from .knowledge_store import KnowledgeStore
 from .llm_client import LLMClient, build_llm_client
 from .schemas import empty_result
 from .utils import load_yaml, now_local_iso
+
+
+# ユーザー回答で上書きできるStep2判定項目と、その回答として許可する値
+USER_ANSWERABLE_STEP2: dict[str, set[str]] = {
+    "asset_item_assessment": {"Yes", "No"},
+    "identified_asset": {"Yes", "No"},
+    "substitution_right": {"Yes", "No"},
+    "economic_benefits": {"Yes", "No"},
+    "right_to_direct_use": {"Lessee", "Lessor", "Neither"},
+    "operation_right_or_design_involvement": {"Yes", "No"},
+    "asset_type": {"Movable", "RealEstate"},
+}
+
+USER_ANSWERABLE_STEP3 = {
+    "economic_life_months",
+    "fair_value",
+    "fixed_lease_payment",
+    "discount_rate",
+    "non_cancellable_period_months",
+}
 
 
 class LeaseJudgmentEngine:
@@ -17,25 +38,106 @@ class LeaseJudgmentEngine:
         self,
         rules_path: str | Path | None = None,
         llm_client: LLMClient | None = None,
+        knowledge_store: KnowledgeStore | None = None,
     ) -> None:
         base = Path(__file__).resolve().parents[1]
         self.rules = load_yaml(rules_path or base / "config" / "judgment_rules.yaml")
-        self.keywords = self.rules.get("keywords", {})
-        self.thresholds = self.rules.get("thresholds", {})
+        self.keywords = dict(self.rules.get("keywords", {}))
+        self.thresholds = dict(self.rules.get("thresholds", {}))
+        self.knowledge = knowledge_store or KnowledgeStore()
+        self._apply_knowledge_settings()
         self.llm_client = llm_client or build_llm_client()
 
-    def judge(self, pages: list[dict[str, Any]], input_pdf_name: str = "") -> dict[str, Any]:
+    def _apply_knowledge_settings(self) -> None:
+        overrides = self.knowledge.threshold_overrides()
+        self.threshold_overrides = {
+            k: v for k, v in overrides.items() if k in self.thresholds and v != self.thresholds.get(k)
+        }
+        self.thresholds.update({k: v for k, v in overrides.items() if v is not None})
+        for category, extra in self.knowledge.extra_keywords().items():
+            merged = list(self.keywords.get(category, []))
+            merged.extend(w for w in extra if w not in merged)
+            self.keywords[category] = merged
+
+    def judge(
+        self,
+        pages: list[dict[str, Any]],
+        input_pdf_name: str = "",
+        user_answers: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         result = empty_result()
         result["audit"]["input_pdf_name"] = input_pdf_name
         result["audit"]["judged_at"] = now_local_iso()
         text = "\n".join(str(p.get("text", "")) for p in pages)
         result["contract_summary"] = self._extract_summary(pages, text)
+        result["knowledge_applied"] = self._collect_knowledge(text)
         self._judge_step1(result, pages, text)
         self._judge_step2(result, pages, text)
-        self._judge_step3(result, pages, text)
+        self._apply_user_answers_step2(result, user_answers)
+        self._judge_step3(result, pages, text, user_answers)
         self._finalize(result)
         self._attach_llm_assessment(result, pages, text)
         return result
+
+    def _collect_knowledge(self, text: str) -> dict[str, Any]:
+        return {
+            "threshold_overrides": self.threshold_overrides,
+            "notes": self.knowledge.relevant_notes(text),
+        }
+
+    def _apply_user_answers_step2(self, result: dict[str, Any], user_answers: dict[str, Any] | None) -> None:
+        answers = (user_answers or {}).get("step2") or {}
+        confirmations = result["audit"].setdefault("user_confirmations", [])
+        step2 = result["step2"]
+        for key, entry in answers.items():
+            allowed = USER_ANSWERABLE_STEP2.get(key)
+            if not allowed or not isinstance(entry, dict):
+                continue
+            answer = entry.get("answer")
+            if answer not in allowed:
+                continue
+            item = step2.get(key)
+            if not isinstance(item, dict):
+                continue
+            note = str(entry.get("note", "")).strip()
+            confirmations.append(
+                {
+                    "step": "step2",
+                    "key": key,
+                    "original_answer": item.get("answer", ""),
+                    "user_answer": answer,
+                    "note": note,
+                    "answered_at": now_local_iso(),
+                }
+            )
+            item["answer"] = answer
+            reason = "ユーザー確認による回答です。"
+            if note:
+                reason += f" 補足: {note}"
+            item["reason"] = reason
+            item["answered_by_user"] = True
+        step2["step2_result"] = self._derive_step2_result(step2)
+
+    def _apply_user_answers_step3(self, result: dict[str, Any], user_answers: dict[str, Any] | None) -> None:
+        answers = (user_answers or {}).get("step3") or {}
+        notes = answers.get("notes") or {}
+        confirmations = result["audit"].setdefault("user_confirmations", [])
+        step3 = result["step3"]
+        for key in USER_ANSWERABLE_STEP3:
+            value = answers.get(key)
+            if value in (None, "", 0):
+                continue
+            confirmations.append(
+                {
+                    "step": "step3",
+                    "key": key,
+                    "original_answer": step3.get(key),
+                    "user_answer": value,
+                    "note": str(notes.get(key, "")).strip(),
+                    "answered_at": now_local_iso(),
+                }
+            )
+            step3[key] = value
 
     def _attach_llm_assessment(self, result: dict[str, Any], pages: list[dict[str, Any]], text: str) -> None:
         provider = getattr(self.llm_client, "provider", "rule_based")
@@ -90,6 +192,8 @@ class LeaseJudgmentEngine:
             "step3": result.get("step3", {}),
             "final_result": result.get("final_result", {}),
         }
+        knowledge_section = self._format_knowledge_for_prompt(result)
+        user_section = self._format_user_confirmations_for_prompt(result)
         return f"""以下の契約書テキストと、既存のルールベース一次判定をレビューしてください。
 
 目的:
@@ -106,10 +210,31 @@ class LeaseJudgmentEngine:
 
 ルールベース一次判定:
 {rule_snapshot}
-
+{knowledge_section}{user_section}
 契約書テキスト:
 {page_text or text[:18000]}
 """
+
+    def _format_knowledge_for_prompt(self, result: dict[str, Any]) -> str:
+        notes = (result.get("knowledge_applied") or {}).get("notes") or []
+        if not notes:
+            return ""
+        lines = ["", "社内ナレッジ（管理者設定の判定ルール・マニュアル・規程。判断時に必ず考慮してください）:"]
+        for note in notes[:10]:
+            lines.append(f"- [{note.get('category', '')}] {note.get('title', '')}: {str(note.get('content', ''))[:1200]}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def _format_user_confirmations_for_prompt(self, result: dict[str, Any]) -> str:
+        confirmations = result.get("audit", {}).get("user_confirmations") or []
+        if not confirmations:
+            return ""
+        lines = ["", "ユーザーによる追加確認回答（契約書外の事実確認。回答を前提に判断してください）:"]
+        for c in confirmations[:20]:
+            note = f" 補足: {c['note']}" if c.get("note") else ""
+            lines.append(f"- {c.get('step', '')}/{c.get('key', '')}: {c.get('user_answer', '')}{note}")
+        lines.append("")
+        return "\n".join(lines)
 
     def _extract_summary(self, pages: list[dict[str, Any]], text: str) -> dict[str, Any]:
         title = self._regex_first(text, [r"契約書名[:：]\s*([^\n]+)", r"^([^\n]{2,60}契約書)"], "")
@@ -322,7 +447,13 @@ class LeaseJudgmentEngine:
 
         result["step2"]["step2_result"] = self._derive_step2_result(result["step2"])
 
-    def _judge_step3(self, result: dict[str, Any], pages: list[dict[str, Any]], text: str) -> None:
+    def _judge_step3(
+        self,
+        result: dict[str, Any],
+        pages: list[dict[str, Any]],
+        text: str,
+        user_answers: dict[str, Any] | None = None,
+    ) -> None:
         step3 = result["step3"]
         summary = result["contract_summary"]
         lease_term = self._extract_months(text, ["リース期間", "契約期間"]) or summary.get("contract_term_months")
@@ -342,6 +473,14 @@ class LeaseJudgmentEngine:
                 "payment_frequency": "monthly" if fixed_payment else "",
             }
         )
+        self._apply_user_answers_step3(result, user_answers)
+        non_cancel = step3["non_cancellable_period_months"]
+        economic_life = step3["economic_life_months"]
+        fair_value = step3["fair_value"]
+        fixed_payment = step3["fixed_lease_payment"]
+        rate = step3["discount_rate"]
+        if fixed_payment and not step3["payment_frequency"]:
+            step3["payment_frequency"] = "monthly"
 
         if non_cancel and economic_life:
             ratio = non_cancel / economic_life

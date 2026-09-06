@@ -9,13 +9,19 @@
 ```text
 lease_judgment_app/
   app.py
+  pages/
+    1_管理者設定.py
   requirements.txt
   README.md
   .env.example
+  docs/
+    RESEARCH.md
   config/
     cell_mapping.yaml
     judgment_rules.yaml
+    knowledge_base.yaml
   src/
+    knowledge_store.py
     pdf_reader.py
     ocr_reader.py
     llm_client.py
@@ -40,6 +46,26 @@ lease_judgment_app/
 PDF読取は `src/pdf_reader.py` が PyMuPDF でテキストPDFを抽出します。テキストが少ないページは `src/ocr_reader.py` のOCRインターフェースに渡せるため、Tesseractや別OCRエンジンへ差し替えできます。
 
 LLM呼び出しは `src/llm_client.py` に抽象化しています。既定は `rule_based` で、APIキーなしでも判定できます。OpenAIを選択した場合は、ルールベース判定に加えてOpenAI補助判定を検証用に表示します。
+
+海外（Trullion、MRI Contract Intelligence、Netgain等）・国内（Fast Accounting、Deloitte等）の類似サービス調査は `docs/RESEARCH.md` にまとめています。
+
+## 追加確認と再判定（Human-in-the-loop）
+
+一度で結論を出さず、契約書だけでは判定できなかった項目（入替権、経済的便益、耐用年数、公正価値など）を画面上でユーザーに確認します。
+
+- 判定結果画面の「追加確認と再判定」に、未確定項目ごとの質問・確認方法・回答の選択肢（選択式）と補足欄（自由記述）を表示します。
+- 「回答を反映して再判定」を押すと、回答を反映して全ステップを再判定します。複数回に分けて回答できます。
+- 回答は判定JSONの `audit.user_confirmations` に「AI初期判定・ユーザー回答・補足・回答日時」の監査証跡として記録され、PDF/Excel/JSON出力にも含まれます。
+- LLMプロバイダー利用時は、ユーザー回答を前提条件としてプロンプトに注入します。
+
+## 管理者設定（ナレッジ・判定ルール）
+
+サイドバーの「管理者設定」ページで、判定エンジンが参照する社内ナレッジを設定できます。設定は `config/knowledge_base.yaml` に保存されます。
+
+- ナレッジ: 社内マニュアル・規程・判定ルールを登録（テキスト入力または .txt/.md アップロード）。一致キーワードを指定すると該当契約のみに適用され、空欄なら全契約に適用されます。適用されたナレッジは判定結果画面に表示され、LLM利用時はプロンプトへ注入されます。
+- 判定しきい値: 少額基準、短期基準、75%テスト・90%PVテストの閾値を標準値から上書きできます。
+- 判定キーワード: ルールベース判定の各キーワード辞書（有形資産名、入替権文言など）に社内固有の語を追加できます。
+- 環境変数 `ADMIN_PASSCODE` を設定すると、管理者ページにパスコード認証がかかります（未設定時はデモとして認証なし）。
 
 ## セットアップ
 

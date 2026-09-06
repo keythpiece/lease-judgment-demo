@@ -71,6 +71,10 @@ def main() -> None:
                     return
                 result = LeaseJudgmentEngine(llm_client=llm_client).judge(pages, uploaded.name)
                 st.session_state["result"] = result
+                st.session_state["pages"] = pages
+                st.session_state["provider"] = provider
+                st.session_state["user_answers"] = {}
+                st.session_state["judgment_round"] = 1
                 st.session_state["pdf_bytes"] = uploaded.getvalue()
                 st.session_state["pdf_name"] = uploaded.name
                 st.session_state["template_bytes"] = template_upload.getvalue() if template_upload else None
@@ -80,6 +84,8 @@ def main() -> None:
     result = st.session_state.get("result")
     if result:
         _render_summary(result)
+        _render_knowledge_applied(result)
+        _render_clarification_form(result)
         _render_llm_assessment(result)
         _render_step_table(result)
         _render_evidence(result)
@@ -188,6 +194,184 @@ def _render_human_review_guidance(guidance: list[dict[str, Any]]) -> None:
             cols[1].warning(f"No -> {item.get('if_no_result', '')}")
             cols[1].write(item.get("if_no", ""))
             st.divider()
+
+
+def _render_knowledge_applied(result: dict[str, Any]) -> None:
+    knowledge = result.get("knowledge_applied") or {}
+    notes = knowledge.get("notes") or []
+    overrides = knowledge.get("threshold_overrides") or {}
+    if not notes and not overrides:
+        return
+    with st.expander(f"参照した社内ナレッジ（{len(notes)}件）と判定ルール調整", expanded=False):
+        if overrides:
+            st.caption("管理者設定により、以下のしきい値を標準値から変更して判定しています。")
+            st.json(overrides)
+        for note in notes:
+            matched = note.get("matched_keywords") or []
+            match_label = f"（一致キーワード: {'、'.join(matched)}）" if matched else "（全契約に適用）"
+            st.markdown(f"**[{note.get('category', '')}] {note.get('title', '')}** {match_label}")
+            st.write(note.get("content", ""))
+            st.divider()
+        st.caption("ナレッジは管理者設定ページで追加・編集できます。LLMプロバイダー利用時は判定プロンプトにも注入されます。")
+
+
+_STEP2_ANSWER_OPTIONS: dict[str, list[tuple[str, str | None]]] = {
+    "right_to_direct_use": [
+        ("未回答（不明のまま）", None),
+        ("借手・利用者が使用方法・目的を決定する", "Lessee"),
+        ("貸手・提供者が決定し、利用者は成果のみ受け取る", "Lessor"),
+        ("契約開始前に使用方法が固定され、双方変更できない", "Neither"),
+    ],
+    "asset_type": [
+        ("未回答（不明のまま）", None),
+        ("動産（機器・車両・設備等）", "Movable"),
+        ("不動産（建物・土地等）", "RealEstate"),
+    ],
+}
+
+_STEP3_NUMERIC_FIELDS = {
+    "economic_life_months": ("経済的耐用年数（か月）", 1, 1200),
+    "fair_value": ("原資産の公正価値（円）", 1, 100_000_000_000),
+    "fixed_lease_payment": ("固定リース料 月額（円）", 1, 10_000_000_000),
+}
+
+
+def _render_clarification_form(result: dict[str, Any]) -> None:
+    guidance = result.get("final_result", {}).get("human_review_guidance", []) or []
+    confirmations = result.get("audit", {}).get("user_confirmations", []) or []
+
+    if confirmations:
+        with st.expander(f"これまでの追加確認の回答履歴（{len(confirmations)}件）"):
+            rows = [
+                {
+                    "Step": c.get("step", ""),
+                    "項目": c.get("key", ""),
+                    "AI初期判定": display_value(c.get("original_answer", "")),
+                    "回答": display_value(c.get("user_answer", "")),
+                    "補足": c.get("note", ""),
+                    "回答日時": c.get("answered_at", ""),
+                }
+                for c in confirmations
+            ]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    if not guidance:
+        if confirmations:
+            st.success("追加確認はすべて回答済みです。上記の判定は回答を反映した再判定結果です。")
+        return
+
+    st.subheader("追加確認と再判定")
+    st.caption(
+        "契約書だけでは判定できなかった項目です。分かる範囲で回答して「回答を反映して再判定」を押すと、"
+        "回答を反映した再判定を行います。未回答のままでも構いません。回答は判定JSONに監査証跡として記録されます。"
+    )
+
+    with st.form("clarification_form"):
+        step2_widgets: dict[str, str] = {}
+        step3_present = False
+        for item in guidance:
+            key = item.get("key", "")
+            step = item.get("step", "")
+            st.markdown(f"**{item.get('item', '')}**: {item.get('question', '')}")
+            if item.get("how_to_check"):
+                st.caption("確認方法: " + item.get("how_to_check", ""))
+            if step == "Step2":
+                options = _STEP2_ANSWER_OPTIONS.get(key) or [
+                    ("未回答（不明のまま）", None),
+                    (f"はい → {item.get('if_yes_result', '')}", "Yes"),
+                    (f"いいえ → {item.get('if_no_result', '')}", "No"),
+                ]
+                labels = [label for label, _ in options]
+                st.radio("回答", labels, index=0, key=f"clarify_{key}", horizontal=True, label_visibility="collapsed")
+                step2_widgets[key] = "answered"
+            elif key in _STEP3_NUMERIC_FIELDS:
+                label, min_v, max_v = _STEP3_NUMERIC_FIELDS[key]
+                st.number_input(label, min_value=0, max_value=max_v, value=0, step=1, key=f"clarify_num_{key}", help="0のままなら未回答として扱います。")
+                step3_present = True
+            st.text_input("補足（任意・自由記述）", key=f"clarify_note_{key}", placeholder="根拠資料名、社内確認先、判断メモなど")
+            st.divider()
+        if step3_present:
+            st.number_input(
+                "割引率（年利%・任意）",
+                min_value=0.0,
+                max_value=50.0,
+                value=0.0,
+                step=0.1,
+                key="clarify_num_discount_rate",
+                help="90%現在価値テストに使用します。0のままなら割引なしで計算します。",
+            )
+        submitted = st.form_submit_button("回答を反映して再判定", type="primary")
+
+    if submitted:
+        new_answers = _collect_form_answers(guidance)
+        if not _has_any_answer(new_answers):
+            st.info("回答が入力されていません。少なくとも1項目に回答するか、数値を入力してください。")
+            return
+        _rejudge_with_answers(new_answers)
+
+
+def _collect_form_answers(guidance: list[dict[str, Any]]) -> dict[str, Any]:
+    answers: dict[str, Any] = {"step2": {}, "step3": {"notes": {}}}
+    for item in guidance:
+        key = item.get("key", "")
+        note = str(st.session_state.get(f"clarify_note_{key}", "")).strip()
+        if item.get("step") == "Step2":
+            options = _STEP2_ANSWER_OPTIONS.get(key) or [
+                ("未回答（不明のまま）", None),
+                (f"はい → {item.get('if_yes_result', '')}", "Yes"),
+                (f"いいえ → {item.get('if_no_result', '')}", "No"),
+            ]
+            selected_label = st.session_state.get(f"clarify_{key}")
+            value = dict(options).get(selected_label)
+            if value:
+                answers["step2"][key] = {"answer": value, "note": note}
+        elif key in _STEP3_NUMERIC_FIELDS:
+            value = st.session_state.get(f"clarify_num_{key}", 0)
+            if value:
+                answers["step3"][key] = int(value)
+                if note:
+                    answers["step3"]["notes"][key] = note
+    rate = st.session_state.get("clarify_num_discount_rate", 0.0)
+    if rate:
+        answers["step3"]["discount_rate"] = float(rate) / 100
+    return answers
+
+
+def _has_any_answer(answers: dict[str, Any]) -> bool:
+    step3 = {k: v for k, v in answers.get("step3", {}).items() if k != "notes"}
+    return bool(answers.get("step2")) or bool(step3)
+
+
+def _rejudge_with_answers(new_answers: dict[str, Any]) -> None:
+    pages = st.session_state.get("pages")
+    if not pages:
+        st.error("契約書の読み取り結果が見つかりません。もう一度PDFをアップロードして判定してください。")
+        return
+    merged = st.session_state.get("user_answers") or {"step2": {}, "step3": {"notes": {}}}
+    merged.setdefault("step2", {}).update(new_answers.get("step2", {}))
+    step3_merged = merged.setdefault("step3", {"notes": {}})
+    for k, v in new_answers.get("step3", {}).items():
+        if k == "notes":
+            step3_merged.setdefault("notes", {}).update(v)
+        else:
+            step3_merged[k] = v
+    with st.spinner("回答を反映して再判定しています..."):
+        try:
+            llm_client = build_llm_client(st.session_state.get("provider", "rule_based"))
+        except Exception as exc:
+            st.error(f"LLMプロバイダーを初期化できませんでした: {exc}")
+            return
+        result = LeaseJudgmentEngine(llm_client=llm_client).judge(
+            pages,
+            st.session_state.get("pdf_name", ""),
+            user_answers=merged,
+        )
+    st.session_state["user_answers"] = merged
+    st.session_state["result"] = result
+    st.session_state["judgment_round"] = st.session_state.get("judgment_round", 1) + 1
+    for key in [k for k in st.session_state if str(k).startswith("clarify_")]:
+        del st.session_state[key]
+    st.rerun()
 
 
 def _render_llm_assessment(result: dict[str, Any]) -> None:
